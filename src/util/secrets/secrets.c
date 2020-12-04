@@ -36,8 +36,13 @@
 #define SECRETS_BASEDN  "cn=secrets"
 #define KCM_BASEDN      "cn=kcm"
 
-#define LOCAL_SIMPLE_FILTER "(type=simple)"
+#define LOCAL_SIMPLE_FILTER "(|(type=simple)(type=binary))"
 #define LOCAL_CONTAINER_FILTER "(type=container)"
+
+#define SEC_ATTR_SECRET  "secret"
+#define SEC_ATTR_ENCTYPE "enctype"
+#define SEC_ATTR_TYPE    "type"
+#define SEC_ATTR_CTIME   "creationTime"
 
 typedef int (*url_mapper_fn)(TALLOC_CTX *mem_ctx,
                              const char *url,
@@ -63,90 +68,136 @@ static struct sss_sec_quota default_kcm_quota = {
     .containers_nest_level = DEFAULT_SEC_CONTAINERS_NEST_LEVEL,
 };
 
-static int local_decrypt(struct sss_sec_ctx *sctx, TALLOC_CTX *mem_ctx,
-                         const char *secret, const char *enctype,
-                         char **plain_secret)
+static const char *sss_sec_enctype_to_str(enum sss_sec_enctype enctype)
 {
-    char *output;
+    switch (enctype) {
+    case SSS_SEC_PLAINTEXT:
+        return "plaintext";
+    case SSS_SEC_MASTERKEY:
+        return "masterkey";
+    default:
+        DEBUG(SSSDBG_CRIT_FAILURE, "Bug: unknown encryption type %d\n",
+                enctype);
+        return "unknown";
+    }
+}
 
-    if (enctype && strcmp(enctype, "masterkey") == 0) {
-        DEBUG(SSSDBG_TRACE_INTERNAL, "Decrypting with masterkey\n");
+static enum sss_sec_enctype sss_sec_str_to_enctype(const char *str)
+{
+    if (strcmp("plaintext", str) == 0) {
+        return SSS_SEC_PLAINTEXT;
+    }
 
-        struct sss_sec_data _secret;
-        size_t outlen;
-        int ret;
+    if (strcmp("masterkey", str) == 0) {
+        return SSS_SEC_MASTERKEY;
+    }
 
-        _secret.data = (char *)sss_base64_decode(mem_ctx, secret,
-                                                 &_secret.length);
+    return SSS_SEC_ENCTYPE_SENTINEL;
+}
+
+static int local_decrypt(struct sss_sec_ctx *sctx,
+                         TALLOC_CTX *mem_ctx,
+                         uint8_t *secret,
+                         size_t secret_len,
+                         enum sss_sec_enctype enctype,
+                         uint8_t **_output,
+                         size_t *_output_len)
+{
+    struct sss_sec_data _secret;
+    uint8_t *output;
+    size_t output_len;
+    int ret;
+
+    switch (enctype) {
+    case SSS_SEC_PLAINTEXT:
+        output = talloc_memdup(mem_ctx, secret, secret_len);
+        output_len = secret_len;
+        break;
+    case SSS_SEC_MASTERKEY:
+        _secret.data = (uint8_t *)sss_base64_decode(mem_ctx,
+                                                    (const char *)secret,
+                                                    &_secret.length);
         if (!_secret.data) {
             DEBUG(SSSDBG_OP_FAILURE, "sss_base64_decode failed\n");
             return EINVAL;
         }
 
+        DEBUG(SSSDBG_TRACE_INTERNAL, "Decrypting with masterkey\n");
         ret = sss_decrypt(mem_ctx, AES256CBC_HMAC_SHA256,
-                          (uint8_t *)sctx->master_key.data,
+                          sctx->master_key.data,
                           sctx->master_key.length,
-                          (uint8_t *)_secret.data, _secret.length,
-                          (uint8_t **)&output, &outlen);
+                          _secret.data, _secret.length,
+                          &output, &output_len);
         talloc_free(_secret.data);
         if (ret) {
             DEBUG(SSSDBG_OP_FAILURE,
                   "sss_decrypt failed [%d]: %s\n", ret, sss_strerror(ret));
             return ret;
         }
-
-        if (((strnlen(output, outlen) + 1) != outlen) ||
-            output[outlen - 1] != '\0') {
-            DEBUG(SSSDBG_CRIT_FAILURE,
-                  "Output length mismatch or output not NULL-terminated\n");
-            talloc_free(output);
-            return EIO;
-        }
-    } else {
-        DEBUG(SSSDBG_TRACE_INTERNAL, "Unexpected enctype (not 'masterkey')\n");
-        output = talloc_strdup(mem_ctx, secret);
-        if (!output) return ENOMEM;
+        break;
+    default:
+        DEBUG(SSSDBG_CRIT_FAILURE, "Unknown encryption type '%d'\n", enctype);
+        return EINVAL;
     }
 
-    *plain_secret = output;
+    if (output == NULL) {
+        return ENOMEM;
+    }
+
+    *_output = output;
+    *_output_len = output_len;
+
     return EOK;
 }
 
-static int local_encrypt(struct sss_sec_ctx *sec_ctx, TALLOC_CTX *mem_ctx,
-                         const char *secret, const char *enctype,
-                         char **ciphertext)
+static int local_encrypt(struct sss_sec_ctx *sec_ctx,
+                         TALLOC_CTX *mem_ctx,
+                         uint8_t *secret,
+                         size_t secret_len,
+                         enum sss_sec_enctype enctype,
+                         uint8_t **_output,
+                         size_t *_output_len)
 {
     struct sss_sec_data _secret;
-    char *output;
+    uint8_t *output;
+    size_t output_len;
+    char *b64;
     int ret;
 
-    if (enctype == NULL) {
-        DEBUG(SSSDBG_CRIT_FAILURE, "No encryption type\n");
+    switch (enctype) {
+    case SSS_SEC_PLAINTEXT:
+        output = talloc_memdup(mem_ctx, secret, secret_len);
+        output_len = secret_len;
+        break;
+    case SSS_SEC_MASTERKEY:
+        ret = sss_encrypt(mem_ctx, AES256CBC_HMAC_SHA256,
+                          sec_ctx->master_key.data,
+                          sec_ctx->master_key.length,
+                          secret, secret_len,
+                          &_secret.data, &_secret.length);
+        if (ret) {
+            DEBUG(SSSDBG_OP_FAILURE,
+                "sss_encrypt failed [%d]: %s\n", ret, sss_strerror(ret));
+            return ret;
+        }
+
+        b64 = sss_base64_encode(mem_ctx, _secret.data, _secret.length);
+        output = (uint8_t*)b64;
+        output_len = strlen(b64) + 1;
+        talloc_free(_secret.data);
+        break;
+    default:
+        DEBUG(SSSDBG_CRIT_FAILURE, "Unknown encryption type '%d'\n", enctype);
         return EINVAL;
     }
 
-    if (strcmp(enctype, "masterkey") != 0) {
-        DEBUG(SSSDBG_CRIT_FAILURE, "Unknown encryption type '%s'\n", enctype);
-        return EINVAL;
+    if (output == NULL) {
+        return ENOMEM;
     }
 
-    ret = sss_encrypt(mem_ctx, AES256CBC_HMAC_SHA256,
-                      (uint8_t *)sec_ctx->master_key.data,
-                      sec_ctx->master_key.length,
-                      (const uint8_t *)secret, strlen(secret) + 1,
-                      (uint8_t **)&_secret.data, &_secret.length);
-    if (ret) {
-        DEBUG(SSSDBG_OP_FAILURE,
-              "sss_encrypt failed [%d]: %s\n", ret, sss_strerror(ret));
-        return ret;
-    }
+    *_output = output;
+    *_output_len = output_len;
 
-    output = sss_base64_encode(mem_ctx,
-                               (uint8_t *)_secret.data, _secret.length);
-    talloc_free(_secret.data);
-    if (!output) return ENOMEM;
-
-    *ciphertext = output;
     return EOK;
 }
 
@@ -338,14 +389,14 @@ static int local_check_max_payload_size(struct sss_sec_req *req,
         return EOK;
     }
 
-    max_payload_size = req->quota->max_payload_size * 1024; /* kb */
+    max_payload_size = req->quota->max_payload_size * 1024; /* KiB */
     if (payload_size > max_payload_size) {
         DEBUG(SSSDBG_OP_FAILURE,
-              "Secrets' payload size [%d kb (%d)] exceeds the maximum allowed "
-              "payload size [%d kb (%d)]\n",
-              payload_size * 1024, /* kb */
+              "Secrets' payload size [%d KiB (%d B)] exceeds the maximum "
+              "allowed payload size [%d KiB (%d B)]\n",
+              payload_size / 1024, /* KiB */
               payload_size,
-              req->quota->max_payload_size, /* kb */
+              req->quota->max_payload_size, /* KiB */
               max_payload_size);
 
         return ERR_SEC_PAYLOAD_SIZE_IS_TOO_LARGE;
@@ -404,7 +455,7 @@ static int local_db_create(struct sss_sec_req *req)
     ret = local_db_check_containers_nest_level(req, msg->dn);
     if (ret != EOK) goto done;
 
-    ret = ldb_msg_add_string(msg, "type", "container");
+    ret = ldb_msg_add_string(msg, SEC_ATTR_TYPE, "container");
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "ldb_msg_add_string failed adding type:container [%d]: %s\n",
@@ -412,7 +463,7 @@ static int local_db_create(struct sss_sec_req *req)
         goto done;
     }
 
-    ret = ldb_msg_add_fmt(msg, "creationTime", "%lu", time(NULL));
+    ret = ldb_msg_add_fmt(msg, SEC_ATTR_CTIME, "%lu", time(NULL));
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "ldb_msg_add_string failed adding creationTime [%d]: %s\n",
@@ -892,7 +943,7 @@ errno_t sss_sec_list(TALLOC_CTX *mem_ctx,
                      size_t *_num_keys)
 {
     TALLOC_CTX *tmp_ctx;
-    static const char *attrs[] = { "secret", NULL };
+    static const char *attrs[] = { SEC_ATTR_SECRET, NULL };
     struct ldb_result *res;
     char **keys;
     int ret;
@@ -951,13 +1002,21 @@ done:
 
 errno_t sss_sec_get(TALLOC_CTX *mem_ctx,
                     struct sss_sec_req *req,
-                    char **_secret)
+                    uint8_t **_secret,
+                    size_t *_secret_len,
+                    char **_datatype)
 {
     TALLOC_CTX *tmp_ctx;
-    static const char *attrs[] = { "secret", "enctype", NULL };
+    static const char *attrs[] = { SEC_ATTR_SECRET, SEC_ATTR_ENCTYPE,
+                                   SEC_ATTR_TYPE, NULL };
     struct ldb_result *res;
-    const char *attr_secret;
+    const struct ldb_val *attr_secret;
     const char *attr_enctype;
+    const char *attr_datatype;
+    enum sss_sec_enctype enctype;
+    char *datatype;
+    uint8_t *secret;
+    size_t secret_len;
     int ret;
 
     if (req == NULL || _secret == NULL) {
@@ -996,21 +1055,38 @@ errno_t sss_sec_get(TALLOC_CTX *mem_ctx,
         goto done;
     }
 
-    attr_secret = ldb_msg_find_attr_as_string(res->msgs[0], "secret", NULL);
+    attr_secret = ldb_msg_find_ldb_val(res->msgs[0], SEC_ATTR_SECRET);
     if (!attr_secret) {
         DEBUG(SSSDBG_CRIT_FAILURE, "The 'secret' attribute is missing\n");
         ret = ENOENT;
         goto done;
     }
 
-    attr_enctype = ldb_msg_find_attr_as_string(res->msgs[0], "enctype", NULL);
+    attr_enctype = ldb_msg_find_attr_as_string(res->msgs[0], SEC_ATTR_ENCTYPE,
+                                               "plaintext");
+    enctype = sss_sec_str_to_enctype(attr_enctype);
+    ret = local_decrypt(req->sctx, tmp_ctx, attr_secret->data,
+                        attr_secret->length, enctype, &secret, &secret_len);
+    if (ret) goto done;
 
-    if (attr_enctype) {
-        ret = local_decrypt(req->sctx, mem_ctx, attr_secret, attr_enctype, _secret);
-        if (ret) goto done;
-    } else {
-        *_secret = talloc_strdup(mem_ctx, attr_secret);
+    if (_datatype != NULL) {
+        attr_datatype = ldb_msg_find_attr_as_string(res->msgs[0], SEC_ATTR_TYPE,
+                                                    "simple");
+        datatype = talloc_strdup(tmp_ctx, attr_datatype);
+        if (datatype == NULL) {
+            ret = ENOMEM;
+            goto done;
+        }
+
+        *_datatype = talloc_steal(mem_ctx, datatype);
     }
+
+    *_secret = talloc_steal(mem_ctx, secret);
+
+    if (_secret_len) {
+        *_secret_len = secret_len;
+    }
+
     ret = EOK;
 
 done:
@@ -1019,11 +1095,13 @@ done:
 }
 
 errno_t sss_sec_put(struct sss_sec_req *req,
-                    const char *secret)
+                    uint8_t *secret,
+                    size_t secret_len,
+                    enum sss_sec_enctype enctype,
+                    const char *datatype)
 {
     struct ldb_message *msg;
-    const char *enctype = "masterkey";
-    char *enc_secret;
+    struct ldb_val enc_secret;
     int ret;
 
     if (req == NULL || secret == NULL) {
@@ -1064,7 +1142,7 @@ errno_t sss_sec_put(struct sss_sec_req *req,
         goto done;
     }
 
-    ret = local_check_max_payload_size(req, strlen(secret));
+    ret = local_check_max_payload_size(req, secret_len);
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "local_check_max_payload_size failed [%d]: %s\n",
@@ -1072,22 +1150,24 @@ errno_t sss_sec_put(struct sss_sec_req *req,
         goto done;
     }
 
-    ret = local_encrypt(req->sctx, msg, secret, enctype, &enc_secret);
+    ret = local_encrypt(req->sctx, msg, secret, secret_len, enctype,
+                        &enc_secret.data, &enc_secret.length);
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "local_encrypt failed [%d]: %s\n", ret, sss_strerror(ret));
         goto done;
     }
 
-    ret = ldb_msg_add_string(msg, "type", "simple");
+    ret = ldb_msg_add_string(msg, SEC_ATTR_TYPE, datatype);
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
-              "ldb_msg_add_string failed adding type:simple [%d]: %s\n",
-              ret, sss_strerror(ret));
+              "ldb_msg_add_string failed adding type:%s [%d]: %s\n",
+              datatype, ret, sss_strerror(ret));
         goto done;
     }
 
-    ret = ldb_msg_add_string(msg, "enctype", enctype);
+    ret = ldb_msg_add_string(msg, SEC_ATTR_ENCTYPE,
+                             sss_sec_enctype_to_str(enctype));
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "ldb_msg_add_string failed adding enctype [%d]: %s\n",
@@ -1095,7 +1175,7 @@ errno_t sss_sec_put(struct sss_sec_req *req,
         goto done;
     }
 
-    ret = ldb_msg_add_string(msg, "secret", enc_secret);
+    ret = ldb_msg_add_value(msg, SEC_ATTR_SECRET, &enc_secret, NULL);
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "ldb_msg_add_string failed adding secret [%d]: %s\n",
@@ -1103,7 +1183,7 @@ errno_t sss_sec_put(struct sss_sec_req *req,
         goto done;
     }
 
-    ret = ldb_msg_add_fmt(msg, "creationTime", "%lu", time(NULL));
+    ret = ldb_msg_add_fmt(msg, SEC_ATTR_CTIME, "%lu", time(NULL));
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "ldb_msg_add_string failed adding creationTime [%d]: %s\n",
@@ -1132,11 +1212,13 @@ done:
 }
 
 errno_t sss_sec_update(struct sss_sec_req *req,
-                       const char *secret)
+                       uint8_t *secret,
+                       size_t secret_len,
+                       enum sss_sec_enctype enctype,
+                       const char *datatype)
 {
     struct ldb_message *msg;
-    const char *enctype = "masterkey";
-    char *enc_secret;
+    struct ldb_val enc_secret;
     int ret;
 
     if (req == NULL || secret == NULL) {
@@ -1177,7 +1259,7 @@ errno_t sss_sec_update(struct sss_sec_req *req,
         goto done;
     }
 
-    ret = local_check_max_payload_size(req, strlen(secret));
+    ret = local_check_max_payload_size(req, secret_len);
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "local_check_max_payload_size failed [%d]: %s\n",
@@ -1185,15 +1267,15 @@ errno_t sss_sec_update(struct sss_sec_req *req,
         goto done;
     }
 
-    ret = local_encrypt(req->sctx, msg, secret, enctype, &enc_secret);
+    ret = local_encrypt(req->sctx, msg, secret, secret_len, enctype,
+                        &enc_secret.data, &enc_secret.length);
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "local_encrypt failed [%d]: %s\n", ret, sss_strerror(ret));
         goto done;
     }
 
-    /* FIXME - should we have a lastUpdate timestamp? */
-    ret = ldb_msg_add_empty(msg, "secret", LDB_FLAG_MOD_REPLACE, NULL);
+    ret = ldb_msg_add_empty(msg, SEC_ATTR_ENCTYPE, LDB_FLAG_MOD_REPLACE, NULL);
     if (ret != LDB_SUCCESS) {
         DEBUG(SSSDBG_MINOR_FAILURE,
               "ldb_msg_add_empty failed: [%s]\n", ldb_strerror(ret));
@@ -1201,7 +1283,41 @@ errno_t sss_sec_update(struct sss_sec_req *req,
         goto done;
     }
 
-    ret = ldb_msg_add_string(msg, "secret", enc_secret);
+    ret = ldb_msg_add_string(msg, SEC_ATTR_ENCTYPE,
+                             sss_sec_enctype_to_str(enctype));
+    if (ret != EOK) {
+        DEBUG(SSSDBG_OP_FAILURE,
+              "ldb_msg_add_string failed adding enctype [%d]: %s\n",
+              ret, sss_strerror(ret));
+        goto done;
+    }
+
+    ret = ldb_msg_add_empty(msg, SEC_ATTR_TYPE, LDB_FLAG_MOD_REPLACE, NULL);
+    if (ret != LDB_SUCCESS) {
+        DEBUG(SSSDBG_MINOR_FAILURE,
+              "ldb_msg_add_empty failed: [%s]\n", ldb_strerror(ret));
+        ret = EIO;
+        goto done;
+    }
+
+    ret = ldb_msg_add_string(msg, SEC_ATTR_TYPE, datatype);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_OP_FAILURE,
+              "ldb_msg_add_string failed adding type:%s [%d]: %s\n",
+              datatype, ret, sss_strerror(ret));
+        goto done;
+    }
+
+    /* FIXME - should we have a lastUpdate timestamp? */
+    ret = ldb_msg_add_empty(msg, SEC_ATTR_SECRET, LDB_FLAG_MOD_REPLACE, NULL);
+    if (ret != LDB_SUCCESS) {
+        DEBUG(SSSDBG_MINOR_FAILURE,
+              "ldb_msg_add_empty failed: [%s]\n", ldb_strerror(ret));
+        ret = EIO;
+        goto done;
+    }
+
+    ret = ldb_msg_add_value(msg, SEC_ATTR_SECRET, &enc_secret, NULL);
     if (ret != LDB_SUCCESS) {
         DEBUG(SSSDBG_MINOR_FAILURE,
               "ldb_msg_add_string failed: [%s]\n", ldb_strerror(ret));

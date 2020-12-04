@@ -73,6 +73,13 @@ errno_t kcm_cc_new(TALLOC_CTX *mem_ctx,
                    struct kcm_ccache **_cc);
 
 /*
+ * Duplicate the ccache. Only ccache and credentials are duplicated,
+ * but their data are a shallow copy.
+ */
+struct kcm_ccache *kcm_cc_dup(TALLOC_CTX *mem_ctx,
+                              const struct kcm_ccache *cc);
+
+/*
  * Returns true if a client can access a ccache.
  *
  * Note that root can access any ccache */
@@ -99,6 +106,11 @@ struct kcm_cred *kcm_cred_new(TALLOC_CTX *mem_ctx,
 /* Add a cred to ccache */
 errno_t kcm_cc_store_creds(struct kcm_ccache *cc,
                            struct kcm_cred *crd);
+
+/* Set cc header information from sec key and client */
+errno_t kcm_cc_set_header(struct kcm_ccache *cc,
+                          const char *sec_key,
+                          struct cli_creds *client);
 
 errno_t kcm_cred_get_uuid(struct kcm_cred *crd, uuid_t uuid);
 
@@ -320,6 +332,11 @@ bool sec_key_match_name(const char *sec_key,
 bool sec_key_match_uuid(const char *sec_key,
                         uuid_t uuid);
 
+errno_t sec_key_parse(TALLOC_CTX *mem_ctx,
+                      const char *sec_key,
+                      const char **_name,
+                      uuid_t uuid);
+
 const char *sec_key_get_name(const char *sec_key);
 
 errno_t sec_key_get_uuid(const char *sec_key,
@@ -333,16 +350,30 @@ const char *sec_key_create(TALLOC_CTX *mem_ctx,
  * sec_key is a concatenation of the ccache's UUID and name
  * sec_value is the JSON dump of the ccache contents
  */
-errno_t sec_kv_to_ccache(TALLOC_CTX *mem_ctx,
-                         const char *sec_key,
-                         const char *sec_value,
-                         struct cli_creds *client,
-                         struct kcm_ccache **_cc);
+errno_t sec_kv_to_ccache_json(TALLOC_CTX *mem_ctx,
+                              const char *sec_key,
+                              const char *sec_value,
+                              struct cli_creds *client,
+                              struct kcm_ccache **_cc);
 
 /* Convert a kcm_ccache to a key-value pair to be stored in secrets */
-errno_t kcm_ccache_to_sec_input(TALLOC_CTX *mem_ctx,
-                                struct kcm_ccache *cc,
+errno_t kcm_ccache_to_sec_input_json(TALLOC_CTX *mem_ctx,
+                                     struct kcm_ccache *cc,
+                                     struct sss_iobuf **_payload);
+
+/*
+ * sec_key is a concatenation of the ccache's UUID and name
+ * sec_value is the binary representation of ccache.
+ */
+errno_t sec_kv_to_ccache_binary(TALLOC_CTX *mem_ctx,
+                                const char *sec_key,
+                                struct sss_iobuf *sec_value,
                                 struct cli_creds *client,
-                                struct sss_iobuf **_payload);
+                                struct kcm_ccache **_cc);
+
+/* Convert a kcm_ccache to its binary representation. */
+errno_t kcm_ccache_to_sec_input_binary(TALLOC_CTX *mem_ctx,
+                                       struct kcm_ccache *cc,
+                                       struct sss_iobuf **_payload);
 
 #endif /* _KCMSRV_CCACHE_H_ */

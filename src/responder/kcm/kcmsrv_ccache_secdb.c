@@ -35,15 +35,16 @@
 #define KCM_SECDB_CCACHE_FMT  KCM_SECDB_BASE_FMT"ccache/"
 #define KCM_SECDB_DFL_FMT     KCM_SECDB_BASE_FMT"default"
 
-static errno_t sec_get_b64(TALLOC_CTX *mem_ctx,
-                           struct sss_sec_req *req,
-                           struct sss_iobuf **_buf)
+static errno_t sec_get(TALLOC_CTX *mem_ctx,
+                       struct sss_sec_req *req,
+                       struct sss_iobuf **_buf,
+                       char **_datatype)
 {
     errno_t ret;
     TALLOC_CTX *tmp_ctx;
-    char *b64_sec;
+    char *datatype;
     uint8_t *data;
-    size_t data_size;
+    size_t len;
     struct sss_iobuf *buf;
 
     tmp_ctx = talloc_new(mem_ctx);
@@ -51,101 +52,61 @@ static errno_t sec_get_b64(TALLOC_CTX *mem_ctx,
         return ENOMEM;
     }
 
-    ret = sss_sec_get(tmp_ctx, req, &b64_sec);
+    ret = sss_sec_get(tmp_ctx, req, &data, &len, &datatype);
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "Cannot retrieve the secret [%d]: %s\n", ret, sss_strerror(ret));
         goto done;
     }
 
-    data = sss_base64_decode(tmp_ctx, b64_sec, &data_size);
-    if (data == NULL) {
-        DEBUG(SSSDBG_CRIT_FAILURE, "Cannot decode secret from base64\n");
-        ret = EIO;
-        goto done;
-    }
-
-    buf = sss_iobuf_init_readonly(tmp_ctx, data, data_size);
+    buf = sss_iobuf_init_steal(tmp_ctx, data, len);
     if (buf == NULL) {
         DEBUG(SSSDBG_CRIT_FAILURE, "Cannot init the iobuf\n");
         ret = EIO;
         goto done;
     }
 
-    ret = EOK;
     *_buf = talloc_steal(mem_ctx, buf);
+    if (_datatype != NULL) {
+        *_datatype = talloc_steal(mem_ctx, datatype);
+    }
+
+    ret = EOK;
+
 done:
     talloc_free(tmp_ctx);
     return ret;
 }
 
-static errno_t sec_put_b64(TALLOC_CTX *mem_ctx,
-                           struct sss_sec_req *req,
-                           struct sss_iobuf *buf)
+static errno_t sec_put(TALLOC_CTX *mem_ctx,
+                       struct sss_sec_req *req,
+                       struct sss_iobuf *buf)
 {
     errno_t ret;
-    TALLOC_CTX *tmp_ctx;
-    char *secret;
 
-    tmp_ctx = talloc_new(mem_ctx);
-    if (tmp_ctx == NULL) {
-        return ENOMEM;
-    }
-
-    secret = sss_base64_encode(tmp_ctx,
-                               sss_iobuf_get_data(buf),
-                               sss_iobuf_get_size(buf));
-    if (secret == NULL) {
-        DEBUG(SSSDBG_CRIT_FAILURE, "Cannot encode secret to base64\n");
-        ret = EIO;
-        goto done;
-    }
-
-    ret = sss_sec_put(req, secret);
+    ret = sss_sec_put(req, sss_iobuf_get_data(buf), sss_iobuf_get_size(buf),
+                      SSS_SEC_PLAINTEXT, "binary");
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "Cannot write the secret [%d]: %s\n", ret, sss_strerror(ret));
-        goto done;
     }
 
-    ret = EOK;
-done:
-    talloc_free(tmp_ctx);
     return ret;
 }
 
-static errno_t sec_update_b64(TALLOC_CTX *mem_ctx,
-                              struct sss_sec_req *req,
-                              struct sss_iobuf *buf)
+static errno_t sec_update(TALLOC_CTX *mem_ctx,
+                          struct sss_sec_req *req,
+                          struct sss_iobuf *buf)
 {
     errno_t ret;
-    TALLOC_CTX *tmp_ctx;
-    char *secret;
 
-    tmp_ctx = talloc_new(mem_ctx);
-    if (tmp_ctx == NULL) {
-        return ENOMEM;
-    }
-
-    secret = sss_base64_encode(tmp_ctx,
-                               sss_iobuf_get_data(buf),
-                               sss_iobuf_get_size(buf));
-    if (secret == NULL) {
-        DEBUG(SSSDBG_CRIT_FAILURE, "Cannot encode secret to base64\n");
-        ret = EIO;
-        goto done;
-    }
-
-    ret = sss_sec_update(req, secret);
+    ret = sss_sec_update(req, sss_iobuf_get_data(buf), sss_iobuf_get_size(buf),
+                         SSS_SEC_PLAINTEXT, "binary");
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "Cannot write the secret [%d]: %s\n", ret, sss_strerror(ret));
-        goto done;
     }
 
-    ret = EOK;
-done:
-    talloc_free(tmp_ctx);
     return ret;
 }
 
@@ -206,7 +167,7 @@ static errno_t kcm_ccache_to_secdb_kv(TALLOC_CTX *mem_ctx,
         goto done;
     }
 
-    ret = kcm_ccache_to_sec_input(mem_ctx, cc, client, &payload);
+    ret = kcm_ccache_to_sec_input_binary(mem_ctx, cc, &payload);
     if (ret != EOK) {
         DEBUG(SSSDBG_CRIT_FAILURE,
               "Cannot convert ccache to a secret [%d][%s]\n", ret, sss_strerror(ret));
@@ -480,6 +441,7 @@ static errno_t secdb_get_cc(TALLOC_CTX *mem_ctx,
     struct kcm_ccache *cc = NULL;
     struct sss_sec_req *sreq = NULL;
     struct sss_iobuf *ccbuf;
+    char *datatype;
 
     tmp_ctx = talloc_new(mem_ctx);
     if (tmp_ctx == NULL) {
@@ -493,22 +455,23 @@ static errno_t secdb_get_cc(TALLOC_CTX *mem_ctx,
         goto done;
     }
 
-    ret = sec_get_b64(tmp_ctx, sreq, &ccbuf);
+    ret = sec_get(tmp_ctx, sreq, &ccbuf, &datatype);
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "Cannot get the secret [%d][%s]\n", ret, sss_strerror(ret));
         goto done;
     }
 
-    ret = sec_kv_to_ccache(tmp_ctx,
-                           secdb_key,
-                           (const char *) sss_iobuf_get_data(ccbuf),
-                           client,
-                           &cc);
+    if (strcmp(datatype, "binary") == 0) {
+        ret = sec_kv_to_ccache_binary(tmp_ctx, secdb_key, ccbuf, client, &cc);
+    } else {
+        ret = sec_kv_to_ccache_json(tmp_ctx, secdb_key,
+                                    (const char *)sss_iobuf_get_data(ccbuf),
+                                    client, &cc);
+    }
     if (ret != EOK) {
-        DEBUG(SSSDBG_OP_FAILURE,
-              "Cannot convert JSON keyval to ccache blob [%d]: %s\n",
-              ret, sss_strerror(ret));
+        DEBUG(SSSDBG_OP_FAILURE, "Cannot convert %s data to ccache "
+              "[%d]: %s\n", datatype, ret, sss_strerror(ret));
         goto done;
     }
 
@@ -746,11 +709,11 @@ static struct tevent_req *ccdb_secdb_set_default_send(TALLOC_CTX *mem_ctx,
         goto immediate;
     }
 
-    ret = sss_sec_get(state, sreq, &cur_default);
+    ret = sss_sec_get(state, sreq, (uint8_t**)&cur_default, NULL, NULL);
     if (ret == ENOENT) {
-        ret = sec_put_b64(state, sreq, iobuf);
+        ret = sec_put(state, sreq, iobuf);
     } else if (ret == EOK) {
-        ret = sec_update_b64(state, sreq, iobuf);
+        ret = sec_update(state, sreq, iobuf);
     }
 
     if (ret != EOK) {
@@ -804,7 +767,7 @@ static struct tevent_req *ccdb_secdb_get_default_send(TALLOC_CTX *mem_ctx,
         goto immediate;
     }
 
-    ret = sec_get_b64(state, sreq, &dfl_iobuf);
+    ret = sec_get(state, sreq, &dfl_iobuf, NULL);
     if (ret == ENOENT) {
         uuid_clear(state->uuid);
         ret = EOK;
@@ -1230,9 +1193,8 @@ static struct tevent_req *ccdb_secdb_create_send(TALLOC_CTX *mem_ctx,
         goto immediate;
     }
 
-    ret = sec_put_b64(state, ccache_req, ccache_payload);
+    ret = sec_put(state, ccache_req, ccache_payload);
     if (ret != EOK) {
-        DEBUG(SSSDBG_OP_FAILURE, "Failed to add the payload\n");
         goto immediate;
     }
 
@@ -1298,7 +1260,7 @@ static struct tevent_req *ccdb_secdb_mod_send(TALLOC_CTX *mem_ctx,
         goto immediate;
     }
 
-    ret = kcm_ccache_to_sec_input(state, cc, client, &payload);
+    ret = kcm_ccache_to_sec_input_binary(state, cc, &payload);
     if (ret != EOK) {
         goto immediate;
     }
@@ -1308,7 +1270,7 @@ static struct tevent_req *ccdb_secdb_mod_send(TALLOC_CTX *mem_ctx,
         goto immediate;
     }
 
-    ret = sec_update_b64(state, sreq, payload);
+    ret = sec_update(state, sreq, payload);
     if (ret != EOK) {
         goto immediate;
     }
@@ -1374,7 +1336,7 @@ static struct tevent_req *ccdb_secdb_store_cred_send(TALLOC_CTX *mem_ctx,
         goto immediate;
     }
 
-    ret = kcm_ccache_to_sec_input(state, cc, client, &payload);
+    ret = kcm_ccache_to_sec_input_binary(state, cc, &payload);
     if (ret != EOK) {
         goto immediate;
     }
@@ -1384,7 +1346,7 @@ static struct tevent_req *ccdb_secdb_store_cred_send(TALLOC_CTX *mem_ctx,
         goto immediate;
     }
 
-    ret = sec_update_b64(state, sreq, payload);
+    ret = sec_update(state, sreq, payload);
     if (ret != EOK) {
         goto immediate;
     }
