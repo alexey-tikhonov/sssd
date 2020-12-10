@@ -4,9 +4,11 @@ dist_noinst_DATA = \
     SSSD_test_cert_0001.config \
     SSSD_test_cert_0002.config \
     SSSD_test_cert_0003.config \
+    SSSD_test_cert_0004.config \
     SSSD_test_cert_key_0001.pem \
     SSSD_test_cert_key_0002.pem \
     SSSD_test_cert_key_0003.pem \
+    SSSD_test_cert_key_0004.pem \
     $(NULL)
 
 openssl_ca_config = $(srcdir)/SSSD_test_CA.config
@@ -33,14 +35,18 @@ endif
 ca_all: clean serial SSSD_test_CA.pem $(certs) $(certs_h) $(pubkeys) $(pubkeys_h) $(pkcs12) $(extra)
 
 $(pwdfile):
-	@echo "12345678" > $@
+	@echo "123456" > $@
 
 SSSD_test_CA.pem: $(openssl_ca_key) $(openssl_ca_config) serial
 	$(OPENSSL) req -batch -config ${openssl_ca_config} -x509 -new -nodes -key $< -sha256 -days 1024 -set_serial 0 -extensions v3_ca -out $@
 
 
 SSSD_test_cert_req_%.pem: $(srcdir)/SSSD_test_cert_key_%.pem $(srcdir)/SSSD_test_cert_%.config
-	$(OPENSSL) req -new -nodes -key $< -reqexts req_exts -config $(srcdir)/SSSD_test_cert_$*.config -out $@
+	if [ $(shell grep -c req_exts $(srcdir)/SSSD_test_cert_$*.config) -eq 0 ]; then \
+		$(OPENSSL) req -new -nodes -key $< -config $(srcdir)/SSSD_test_cert_$*.config -out $@ ; \
+	else \
+		$(OPENSSL) req -new -nodes -key $< -reqexts req_exts -config $(srcdir)/SSSD_test_cert_$*.config -out $@ ; \
+	fi
 
 SSSD_test_cert_x509_%.pem: SSSD_test_cert_req_%.pem $(openssl_ca_config) SSSD_test_CA.pem
 	$(OPENSSL) ca -config ${openssl_ca_config} -batch -notext -keyfile $(openssl_ca_key) -in $< -days 200 -extensions usr_cert -out $@
@@ -65,18 +71,18 @@ SSSD_test_cert_pubsshkey_%.h: SSSD_test_cert_pubsshkey_%.pub
 # - src/tests/cmocka/test_pam_srv.c
 p11_nssdb: SSSD_test_cert_pkcs12_0001.pem SSSD_test_CA.pem $(pwdfile)
 	mkdir $@
-	$(CERTUTIL) -d sql:./$@ -N --empty-password
-	$(CERTUTIL) -d sql:./$@ -A -n 'SSSD test CA' -t CT,CT,CT -a -i SSSD_test_CA.pem
-	$(PK12UTIL) -d sql:./$@ -i SSSD_test_cert_pkcs12_0001.pem -w $(pwdfile)
+	$(CERTUTIL) -d sql:./$@ -N -f $(pwdfile)
+	$(CERTUTIL) -d sql:./$@ -A -n 'SSSD test CA' -t CT,CT,CT -a -i SSSD_test_CA.pem -f $(pwdfile)
+	$(PK12UTIL) -d sql:./$@ -i SSSD_test_cert_pkcs12_0001.pem -w $(pwdfile) -k $(pwdfile)
 
 # This nss db is used in
 # - src/tests/cmocka/test_pam_srv.c
 p11_nssdb_2certs: SSSD_test_cert_pkcs12_0001.pem SSSD_test_cert_pkcs12_0002.pem SSSD_test_CA.pem $(pwdfile)
 	mkdir $@
-	$(CERTUTIL) -d sql:./$@ -N --empty-password
-	$(CERTUTIL) -d sql:./$@ -A -n 'SSSD test CA' -t CT,CT,CT -a -i SSSD_test_CA.pem
-	$(PK12UTIL) -d sql:./$@ p11_nssdb -i SSSD_test_cert_pkcs12_0001.pem -w $(pwdfile)
-	$(PK12UTIL) -d sql:./$@ p11_nssdb -i SSSD_test_cert_pkcs12_0002.pem -w $(pwdfile)
+	$(CERTUTIL) -d sql:./$@ -N -f $(pwdfile)
+	$(CERTUTIL) -d sql:./$@ -A -n 'SSSD test CA' -t CT,CT,CT -a -i SSSD_test_CA.pem -f $(pwdfile)
+	$(PK12UTIL) -d sql:./$@ -i SSSD_test_cert_pkcs12_0001.pem -w $(pwdfile) -k $(pwdfile)
+	$(PK12UTIL) -d sql:./$@ -i SSSD_test_cert_pkcs12_0002.pem -w $(pwdfile) -k $(pwdfile)
 
 # The softhsm2 PKCS#11 setups are used in
 # - src/tests/cmocka/test_pam_srv.c

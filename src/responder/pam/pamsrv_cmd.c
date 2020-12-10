@@ -1461,7 +1461,9 @@ static void pam_forwarder_cert_cb(struct tevent_req *req)
             if (pd->cmd == SSS_PAM_AUTHENTICATE) {
                 DEBUG(SSSDBG_CRIT_FAILURE,
                       "No certificate returned, authentication failed.\n");
-                ret = ENOENT;
+                preq->pd->pam_status = PAM_AUTH_ERR;
+                pam_reply(preq);
+                return;
             } else {
                 ret = pam_check_user_search(preq);
             }
@@ -1762,7 +1764,7 @@ static void pam_forwarder_cb(struct tevent_req *req)
         goto done;
     }
 
-    ret = p11_refresh_certmap_ctx(pctx, pctx->rctx->domains->certmaps);
+    ret = p11_refresh_certmap_ctx(pctx, pctx->rctx->domains);
     if (ret != EOK) {
         DEBUG(SSSDBG_OP_FAILURE,
               "p11_refresh_certmap_ctx failed, "
