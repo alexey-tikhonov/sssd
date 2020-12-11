@@ -28,19 +28,7 @@
 #define DEFAULT_BUFFER_SIZE 4096
 
 /* this is intentionally a global variable */
-struct watchdog_ctx {
-    timer_t timerid;
-    struct timeval interval;
-    struct tevent_timer *te;
-    volatile int ticks;
-
-    /* To detect time shift. */
-    struct tevent_context *ev;
-    int input_interval;
-    time_t timestamp;
-    struct tevent_fd *tfd;
-    int pipefd[2];
-} watchdog_ctx;
+struct watchdog_ctx watchdog_ctx;
 
 static void watchdog_detect_timeshift(void)
 {

@@ -224,6 +224,8 @@ static errno_t unset_fcntl_flags(int fd, int fl_flags)
     return EOK;
 }
 
+extern struct watchdog_ctx watchdog_ctx;
+
 static void sss_ldap_init_sys_connect_done(struct tevent_req *subreq)
 {
     struct tevent_req *req = tevent_req_callback_data(subreq,
@@ -261,32 +263,37 @@ static void sss_ldap_init_sys_connect_done(struct tevent_req *subreq)
     }
 
     if (ldap_is_ldaps_url(state->uri)) {
+
+        int ticks = __sync_add_and_fetch(&watchdog_ctx.ticks, 0);
         lret = ldap_install_tls(state->ldap);
         if (lret != LDAP_SUCCESS) {
             if (lret == LDAP_LOCAL_ERROR) {
                 DEBUG(SSSDBG_FUNC_DATA, "TLS/SSL already in place.\n");
             } else {
 
-                optret = sss_ldap_get_diagnostic_msg(state, state->ldap,
-                                                     &tlserr);
+                optret = sss_ldap_get_diagnostic_msg(state, state->ldap, &tlserr);
                 if (optret == LDAP_SUCCESS) {
-                    DEBUG(SSSDBG_CRIT_FAILURE,
-                          "ldap_install_tls failed: [%s] [%s]\n",
-                          sss_ldap_err2string(lret), tlserr);
-                    sss_log(SSS_LOG_ERR,
-                            "Could not start TLS encryption. %s", tlserr);
+                    DEBUG(SSSDBG_CRIT_FAILURE, "ldap_install_tls failed: [%s] [%s]\n", sss_ldap_err2string(lret), tlserr);
                 } else {
-                    DEBUG(SSSDBG_CRIT_FAILURE,
-                          "ldap_install_tls failed: [%s]\n",
-                          sss_ldap_err2string(lret));
-                    sss_log(SSS_LOG_ERR, "Could not start TLS encryption. "
-                                         "Check for certificate issues.");
+                    DEBUG(SSSDBG_CRIT_FAILURE, "ldap_install_tls failed: [%s]\n", sss_ldap_err2string(lret));
                 }
 
-                ret = EIO;
-                goto fail;
+                /* let's check if fail is due to WD signal */
+                if (__sync_add_and_fetch(&watchdog_ctx.ticks, 0) > ticks) {
+                    DEBUG(SSSDBG_FUNC_DATA, "WD ticks changed, retrying ldap_install_tls()...\n");
+                    lret = ldap_install_tls(state->ldap);
+                    if (lret != LDAP_SUCCESS) {
+                        DEBUG(SSSDBG_CRIT_FAILURE, "Alas, ldap_install_tls() failed again: [%s]\n", sss_ldap_err2string(lret));
+                        ret = EIO;
+                        goto fail;
+                    }
+                } else {
+                    ret = EIO;
+                    goto fail;
+                }
             }
         }
+
     }
 
     tevent_req_done(req);

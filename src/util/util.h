@@ -735,6 +735,19 @@ int sss_unique_file(TALLOC_CTX *owner,
 int sss_unique_filename(TALLOC_CTX *owner, char *path_tmpl);
 
 /* from util_watchdog.c */
+struct watchdog_ctx {
+    timer_t timerid;
+    struct timeval interval;
+    struct tevent_timer *te;
+    volatile int ticks;
+
+    /* To detect time shift. */
+    struct tevent_context *ev;
+    int input_interval;
+    time_t timestamp;
+    struct tevent_fd *tfd;
+    int pipefd[2];
+};
 int setup_watchdog(struct tevent_context *ev, int interval);
 void teardown_watchdog(void);
 
