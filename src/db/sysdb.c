@@ -2134,8 +2134,6 @@ void ldb_debug_messages(void *context, enum ldb_debug_level level,
         break;
     }
 
-    if (DEBUG_IS_SET(loglevel)) {
-        sss_vdebug_fn(__FILE__, __LINE__, "ldb", loglevel, APPEND_LINE_FEED,
-                      fmt, ap);
-    }
+    sss_vdebug_fn(__FILE__, __LINE__, "ldb", loglevel, APPEND_LINE_FEED,
+                  fmt, ap);
 }
