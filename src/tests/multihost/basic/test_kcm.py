@@ -125,6 +125,16 @@ class TestSanityKCM(object):
             ssh.close()
 
         log_lines_nodebug = self._kcm_log_length(multihost)
+
+        if log_lines_nodebug != log_lines_pre:
+            bn = 'sssd_kcm.log'
+            kcm_log_file = '/var/log/sssd/' + bn
+            local_kcm_log_file = '/tmp/kcm.log'
+            multihost.master[0].transport.get_file(kcm_log_file,
+                                                   local_kcm_log_file)
+            log = open(local_kcm_log_file, "r").read()
+            print(log)
+
         assert log_lines_nodebug == log_lines_pre
 
         # Enable debugging, restart only the kcm service, make sure some
