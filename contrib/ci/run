@@ -64,6 +64,13 @@ if which pycodestyle &> /dev/null; then
   PEP8_BIN="pycodestyle"
 fi
 
+printf " >>> PEP8 BIN: "
+printf $PEP8_BIN
+printf "\n"
+PWBIN=$(which pycodestyle)
+printf $PWBIN
+printf "\n"
+
 # Additional valgrind flags
 declare VALGRIND_FLAGS=""
 if [ -e "$CI_DIR/sssd.$DISTRO_ID.supp" ]; then
