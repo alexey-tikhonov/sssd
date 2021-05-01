@@ -65,6 +65,7 @@ localedir = @localedir@
 nsslibdir = @nsslibdir@
 pamlibdir = @pammoddir@
 autofslibdir = @appmodpath@
+subidlibdir = @subidlibpath@
 nfslibdir = @nfsidmaplibdir@
 
 dbpath = @dbpath@
@@ -4217,6 +4218,21 @@ libsss_autofs_la_LDFLAGS = \
     -Wl,--version-script,$(srcdir)/src/sss_client/autofs/sss_autofs.exports
 endif
 
+if BUILD_SUBID
+subidlib_LTLIBRARIES = libsubid_sss.la
+libsubid_sss_la_SOURCES = \
+    src/sss_client/common.c \
+    src/sss_client/sss_cli.h \
+    src/sss_client/subid/sss_subid.c
+
+libsubid_sss_la_LIBADD = \
+    $(CLIENT_LIBS)
+libsubid_sss_la_LDFLAGS = \
+    -module \
+    -avoid-version \
+    -Wl,--version-script,$(srcdir)/src/sss_client/subid/sss_subid.exports
+endif
+
 dist_noinst_DATA += \
     src/sss_client/sss_nss.exports \
     src/sss_client/sss_pam.exports \
@@ -4229,6 +4245,10 @@ endif
 
 if BUILD_AUTOFS
 dist_noinst_DATA += src/sss_client/autofs/sss_autofs.exports
+endif
+
+if BUILD_SUBID
+dist_noinst_DATA += src/sss_client/subid/sss_subid.exports
 endif
 
 ####################
