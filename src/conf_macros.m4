@@ -678,11 +678,11 @@ AC_DEFUN([WITH_AUTOFS],
 AC_DEFUN([WITH_SUBID],
   [ AC_ARG_WITH([subid],
                 [AC_HELP_STRING([--with-subid],
-                                [Whether to build with subid ranges support [no]]
+                                [Whether to build with subid ranges support [yes]]
                                )
                 ],
                 [with_subid=$withval],
-                with_subid=no
+                with_subid=yes
                )
 
     if test x"$with_subid" = xyes; then
