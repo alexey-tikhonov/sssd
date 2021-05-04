@@ -17,7 +17,7 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <subid/subid.h>
+#include "subid.h" /* #include <subid/subid.h> */
 
 
 struct range {
