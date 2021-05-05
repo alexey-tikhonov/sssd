@@ -148,6 +148,12 @@ nss_protocol_fill_initgr(struct nss_ctx *nss_ctx,
                          struct cache_req_result *result);
 
 errno_t
+nss_protocol_fill_subid_ranges(struct nss_ctx *nss_ctx,
+                               struct nss_cmd_ctx *cmd_ctx,
+                               struct sss_packet *packet,
+                               struct cache_req_result *result);
+
+errno_t
 nss_protocol_fill_netgrent(struct nss_ctx *nss_ctx,
                            struct nss_cmd_ctx *cmd_ctx,
                            struct sss_packet *packet,

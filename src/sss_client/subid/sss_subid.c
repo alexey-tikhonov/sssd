@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "subid.h" /* #include <subid/subid.h> */
+#include "sss_cli.h"
 
 
 struct range {
@@ -28,19 +29,99 @@ struct range {
 typedef struct subordinate_range *subid_range_ptr;
 
 
-static enum subid_status _list_owner_ranges(const char *owner,
+/* SUBID_RANGES Reply:
+ *
+ * 0-3: 32bit unsigned number of UID results
+ * 4-7: 32bit unsigned number of GID results
+ * For each result (sub-uid ranges first):
+ * 0-3: 32bit number with "start" id
+ * 4-7: 32bit number with "count" (range size)
+ */
+static enum subid_status _list_owner_ranges(const char *user,
                                             enum subid_type id_type,
                                             struct range **ranges,
                                             int *count)
 {
-    if ( !owner || !ranges || !count ||
+    size_t user_len;
+    enum sss_status ret;
+    uint8_t *repbuf = NULL;
+    size_t index = 0;
+    size_t replen;
+    int errnop;
+    struct sss_cli_req_data rd;
+    uint32_t num_results = 0;
+    uint32_t val;
+
+
+    if ( !user || !ranges || !count ||
           ((id_type != ID_TYPE_UID) && (id_type != ID_TYPE_GID)) ) {
         return SUBID_STATUS_ERROR;
     }
 
-    /* TODO */
+    ret = sss_strnlen(user, SSS_NAME_MAX, &user_len);
+    if (ret != 0) {
+        return SUBID_STATUS_UNKNOWN_USER;
+    }
+    rd.len = user_len + 1;
+    rd.data = user;
 
-    return SUBID_STATUS_UNKNOWN_USER;
+    sss_nss_lock();
+    /* Anticipated workflow will always request both
+     * sub-uid and sub-gid ranges anyway.
+     * So don't bother with dedicated commands -
+     * just request everything in one shot.
+     * The second request will get data from the cache
+     */
+    ret = sss_cli_make_request_with_checks(SSS_NSS_GET_SUBID_RANGES, &rd,
+                                           SSS_CLI_SOCKET_TIMEOUT,
+                                           &repbuf, &replen, &errnop,
+                                           SSS_NSS_SOCKET_NAME);
+    sss_nss_unlock();
+
+    if (ret != SSS_STATUS_SUCCESS) {
+        /* TODO: check 'errnop' and return SUBID_STATUS_ERROR_CONN if appropriate */
+        return SUBID_STATUS_ERROR;
+    }
+
+    SAFEALIGN_COPY_UINT32(&num_results, repbuf, NULL);
+    if (id_type == ID_TYPE_UID) {
+        index = 2 * sizeof(uint32_t);
+    } else {
+        index = (2 + 2*num_results) * sizeof(uint32_t);
+        SAFEALIGN_COPY_UINT32(&num_results, repbuf + sizeof(uint32_t), NULL);
+    }
+    if (num_results == 0) {
+        /* TODO: how to distinguish "user not found" vs "user found but doesn't have ranges defined" here?
+         * Options:
+         *  - special "fake" entry in the cache
+         *  - provide 'nss_protocol_done_fn' to 'nss_getby_name' to avoid "ENOENT -> "empty packet" logic
+         *  - add custom error code for this case and handle in generic 'nss_protocol_done'
+         */
+        free(repbuf);
+        return SUBID_STATUS_UNKNOWN_USER;
+    }
+
+    *count = num_results;
+    if (*count < 0) {
+        free(repbuf);
+        return SUBID_STATUS_ERROR;
+    }
+
+    *ranges = malloc(num_results * sizeof(struct range));
+    if (!*ranges) {
+        free(repbuf);
+        return SUBID_STATUS_ERROR;
+    }
+
+    for (uint32_t c = 0; c < num_results; ++c) {
+        SAFEALIGN_COPY_UINT32(&val, repbuf + index, &index);
+        (*ranges)[c].start = val;
+        SAFEALIGN_COPY_UINT32(&val, repbuf + index, &index);
+        (*ranges)[c].count = val;
+    }
+    free(repbuf);
+
+    return SUBID_STATUS_SUCCESS;
 }
 
 
@@ -65,6 +146,11 @@ enum subid_status shadow_subid_list_owner_ranges(const char *owner,
     if ((ret != SUBID_STATUS_SUCCESS) || (*count == 0)) {
         return ret;
     }
+
+    /* see:
+     * https://github.com/shadow-maint/shadow/pull/321#issuecomment-831374237
+     * https://github.com/shadow-maint/shadow/pull/321#issuecomment-831997503
+     */
 
     *ranges = (subid_range_ptr *)malloc(*count * sizeof(subid_range_ptr));
     if (!*ranges) {
