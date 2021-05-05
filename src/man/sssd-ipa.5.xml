@@ -356,6 +356,19 @@
                     </listitem>
                 </varlistentry>
 
+                <varlistentry condition="with_subid">
+                    <term>ipa_subid_ranges_search_base (string)</term>
+                    <listitem>
+                        <para>
+                            Optional. Use the given string as search base for
+                            subordinate ranges related objects.
+                        </para>
+                        <para>
+                            Default: Use base DN
+                        </para>
+                    </listitem>
+                </varlistentry>
+
                 <varlistentry>
                     <term>ipa_hbac_search_base (string)</term>
                     <listitem>
