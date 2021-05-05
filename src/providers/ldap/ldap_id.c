@@ -125,6 +125,18 @@ errno_t users_get_handle_no_user(TALLOC_CTX *mem_ctx,
     return ret;
 }
 
+
+struct tevent_req *subid_ranges_get_send(TALLOC_CTX *memctx,
+                                         struct tevent_context *ev,
+                                         struct sdap_id_ctx *ctx,
+                                         struct sdap_domain *sdom,
+                                         struct sdap_id_conn_ctx *conn,
+                                         const char* filter_value,
+                                         const char *extra_value);
+
+int subid_ranges_get_recv(struct tevent_req *req, int *dp_error_out,
+                          int *sdap_ret);
+
 /* =Users-Related-Functions-(by-name,by-uid)============================== */
 
 struct users_get_state {
@@ -1449,6 +1461,19 @@ sdap_handle_acct_req_send(TALLOC_CTX *mem_ctx,
                                      noexist_delete);
         break;
 
+    case BE_REQ_SUBID_RANGES:
+        if (!ar->extra_value) {
+            /* TODO: add error code */
+            ret = ERR_GET_ACCT_DOM_NOT_SUPPORTED;
+            state->err = "This id_provider doesn't support subid ranges";
+            goto done;
+        }
+        subreq = subid_ranges_get_send(state, be_ctx->ev, id_ctx,
+                                       sdom, conn,
+                                       ar->filter_value,
+                                       ar->extra_value);
+        break;
+
     case BE_REQ_NETGROUP:
         if (ar->filter_type != BE_FILTER_NAME) {
             ret = EINVAL;
@@ -1533,6 +1558,11 @@ sdap_handle_acct_req_send(TALLOC_CTX *mem_ctx,
     default: /*fail*/
         ret = EINVAL;
         state->err = "Invalid request type";
+        DEBUG(SSSDBG_OP_FAILURE,
+              "Unexpected request type: 0x%X [%s:%s] in %s\n",
+              ar->entry_type, ar->filter_value,
+              ar->extra_value?ar->extra_value:"-",
+              ar->domain);
         goto done;
     }
 
@@ -1577,6 +1607,10 @@ sdap_handle_acct_req_done(struct tevent_req *subreq)
     case BE_REQ_INITGROUPS: /* init groups for user */
         err = "Init group lookup failed";
         ret = groups_by_user_recv(subreq, &state->dp_error, &state->sdap_ret);
+        break;
+    case BE_REQ_SUBID_RANGES:
+        err = "Subid ranges lookup failed";
+        ret = subid_ranges_get_recv(subreq, &state->dp_error, &state->sdap_ret);
         break;
     case BE_REQ_NETGROUP:
         err = "Netgroup lookup failed";
@@ -1914,3 +1948,261 @@ errno_t sdap_account_info_handler_recv(TALLOC_CTX *mem_ctx,
 
     return EOK;
 }
+
+
+/* ************************************************************************************** */
+
+#include "db/sysdb_subid.h"
+static int subid_ranges_get_retry(struct tevent_req *req);
+static void subid_ranges_get_connect_done(struct tevent_req *subreq);
+static void subid_ranges_get_search(struct tevent_req *req);
+static void subid_ranges_get_done(struct tevent_req *subreq);
+
+struct subid_ranges_get_state {
+    struct tevent_context *ev;
+    struct sdap_id_ctx *ctx;
+    struct sdap_domain *sdom;
+    struct sdap_id_conn_ctx *conn;
+    struct sdap_id_op *op;
+   /*struct sysdb_ctx *sysdb;*/
+    struct sss_domain_info *domain;
+
+    char *filter;
+    char *name;
+    const char **attrs;
+
+    int dp_error;
+    int sdap_ret;
+};
+
+struct tevent_req *subid_ranges_get_send(TALLOC_CTX *memctx,
+                                         struct tevent_context *ev,
+                                         struct sdap_id_ctx *ctx,
+                                         struct sdap_domain *sdom,
+                                         struct sdap_id_conn_ctx *conn,
+                                         const char *filter_value,
+                                         const char *extra_value)
+{
+    struct tevent_req *req;
+    struct subid_ranges_get_state *state;
+    int ret;
+
+    req = tevent_req_create(memctx, &state, struct subid_ranges_get_state);
+    if (!req) return NULL;
+
+    state->ev = ev;
+    state->ctx = ctx;
+    state->sdom = sdom;
+    state->conn = conn;
+    state->dp_error = DP_ERR_FATAL;
+    state->name = talloc_strdup(state, filter_value);
+    if (!state->name) {
+        DEBUG(SSSDBG_OP_FAILURE, "talloc_strdup failed\n");
+        ret = ENOMEM;
+        goto done;
+    }
+
+    state->op = sdap_id_op_create(state, state->conn->conn_cache);
+    if (!state->op) {
+        DEBUG(SSSDBG_OP_FAILURE, "sdap_id_op_create failed\n");
+        ret = ENOMEM;
+        goto done;
+    }
+
+    state->domain = sdom->dom;
+    /*state->sysdb = sdom->dom->sysdb;*/
+
+    /* TODO: move to ipa provider */
+    state->filter = talloc_asprintf(state,
+                                    "(&(objectClass=ipasubordinateid)(ipaOwner=%s))",
+                                    extra_value);
+
+    ret = subid_ranges_get_retry(req);
+    if (ret != EOK) {
+        goto done;
+    }
+
+    return req;
+
+done:
+    if (ret != EOK) {
+        tevent_req_error(req, ret);
+    } else {
+        tevent_req_done(req);
+    }
+    return tevent_req_post(req, ev);
+}
+
+
+static int subid_ranges_get_retry(struct tevent_req *req)
+{
+    struct subid_ranges_get_state *state = tevent_req_data(req,
+                                                    struct subid_ranges_get_state);
+    struct tevent_req *subreq;
+    int ret = EOK;
+
+    subreq = sdap_id_op_connect_send(state->op, state, &ret);
+    if (!subreq) {
+        return ret;
+    }
+
+    tevent_req_set_callback(subreq, subid_ranges_get_connect_done, req);
+    return EOK;
+}
+
+static void subid_ranges_get_connect_done(struct tevent_req *subreq)
+{
+    struct tevent_req *req = tevent_req_callback_data(subreq,
+                                                      struct tevent_req);
+    struct subid_ranges_get_state *state = tevent_req_data(req,
+                                                     struct subid_ranges_get_state);
+    int dp_error = DP_ERR_FATAL;
+    int ret;
+
+    ret = sdap_id_op_connect_recv(subreq, &dp_error);
+    talloc_zfree(subreq);
+
+    if (ret != EOK) {
+        state->dp_error = dp_error;
+        tevent_req_error(req, ret);
+        return;
+    }
+
+    subid_ranges_get_search(req);
+}
+
+static void subid_ranges_get_search(struct tevent_req *req)
+{
+    struct subid_ranges_get_state *state = tevent_req_data(req,
+                                                     struct subid_ranges_get_state);
+    struct tevent_req *subreq = NULL;
+
+    /* TODO: build from a map */
+    static const char *attrs[] = (const char *[]){
+          SYSDB_OBJECTCLASS,
+          "ipaSubUidCount",
+          "ipaSubGidCount",
+          "ipaSubUidNumber",
+          "ipaSubGidNumber",
+          NULL
+        };
+
+    static struct sdap_attr_map subid_map[] = {
+        { "ipa_subuid_object_class", "ipasubordinateid", SYSDB_SUBID_RANGE_OC, "ipasubordinateidentry" },
+        { "ipa_subuid_count", "ipaSubUidCount",  "subUidCount",  "ipaSubUidCount" },
+        { "ipa_subgid_count", "ipaSubGidCount",  "subGidCount",  "ipaSubGidCount" },
+        { "ipa_subuid_number", "ipaSubUidNumber", "subUidNumber", "ipaSubUidNumber" },
+        { "ipa_subgid_number", "ipaSubGidNumber", "subGidNumber", "ipaSubGidNumber" },
+        SDAP_ATTR_MAP_TERMINATOR
+    };
+
+
+    subreq = sdap_get_generic_send(state,
+                                   state->ev,
+                                   state->ctx->opts,
+                                   sdap_id_op_handle(state->op),
+                                   "cn=subids,cn=accounts,dc=ipasubid,dc=test", /* TODO: introduce subid search base(s) */
+                                   LDAP_SCOPE_SUBTREE,
+                                   state->filter,
+                                   attrs,
+                                   /* TODO:
+                                   state->ctx->opts->user_map, state->ctx->opts->user_map_cnt,
+                                   */
+                                   subid_map, 5,
+                                   10, false);
+
+    if (!subreq) {
+        tevent_req_error(req, ENOMEM);
+        return;
+    }
+    tevent_req_set_callback(subreq, subid_ranges_get_done, req);
+}
+
+static void subid_ranges_get_done(struct tevent_req *subreq)
+{
+    struct tevent_req *req = tevent_req_callback_data(subreq,
+                                                      struct tevent_req);
+    struct subid_ranges_get_state *state = tevent_req_data(req,
+                                                     struct subid_ranges_get_state);
+    int dp_error = DP_ERR_FATAL;
+    int ret;
+    struct sysdb_attrs **results;
+    size_t num_results;
+
+    ret = sdap_get_generic_recv(subreq, state, &num_results, &results);
+    talloc_zfree(subreq);
+    if (ret) {
+        tevent_req_error(req, ret);
+        return;
+    }
+
+    ret = sdap_id_op_done(state->op, ret, &dp_error);
+    if (dp_error == DP_ERR_OK && ret != EOK) {
+        /* retry */
+        ret = subid_ranges_get_retry(req);
+        if (ret != EOK) {
+            tevent_req_error(req, ret);
+            return;
+        }
+        return;
+    }
+    state->sdap_ret = ret;
+
+    if (ret && ret != ENOENT) {
+        state->dp_error = dp_error;
+        tevent_req_error(req, ret);
+        return;
+    }
+
+    if (num_results == 0 || !results) {
+        DEBUG(SSSDBG_OP_FAILURE, "Failed to retrieve subid ranges.\n");
+        /* TODO: delete cached ranges? */
+        tevent_req_error(req, ENOENT);
+        return;
+    }
+
+    if (num_results > 1) {
+        DEBUG(SSSDBG_OP_FAILURE,
+              "Multiple subid ranges, only first will be processed\n");
+    }
+    const struct ldb_message_element *result = results[0]->a;
+    DEBUG(SSSDBG_FUNC_DATA, "First result contains %d attrs:\n", results[0]->num);
+    for (int c = 0; c < results[0]->num; ++c) {
+        static char buf[256];
+        memcpy(buf, result[c].values[0].data, result[c].values[0].length);
+        buf[result[c].values[0].length] = 0;
+        DEBUG(SSSDBG_FUNC_DATA, "     %s: %s\n", result[c].name, buf);
+    }
+
+
+    /* store range */
+    sysdb_store_subid_range(state->domain, state->name,
+                            0, /* TODO: add expiration timeout */
+                            time(NULL), results[0]);
+
+
+    state->dp_error = DP_ERR_OK;
+    tevent_req_done(req);
+}
+
+int subid_ranges_get_recv(struct tevent_req *req, int *dp_error_out,
+                          int *sdap_ret)
+{
+    struct subid_ranges_get_state *state = tevent_req_data(req,
+                                                    struct subid_ranges_get_state);
+
+    if (dp_error_out) {
+        *dp_error_out = state->dp_error;
+    }
+
+    if (sdap_ret) {
+        *sdap_ret = state->sdap_ret;
+    }
+
+    TEVENT_REQ_RETURN_ON_ERROR(req);
+
+    return EOK;
+}
+
+
+

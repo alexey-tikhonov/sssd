@@ -38,6 +38,7 @@ static bool is_object_overridable(struct dp_id_data *ar)
     case BE_REQ_USER:
     case BE_REQ_GROUP:
     case BE_REQ_INITGROUPS:
+    /* case BE_REQ_SUBID_RANGES:  --  ID view isn't supported yet */
     case BE_REQ_BY_SECID:
     case BE_REQ_USER_AND_GROUP:
     case BE_REQ_BY_UUID:
@@ -727,6 +728,11 @@ static errno_t ipa_id_get_account_info_get_original_step(struct tevent_req *req,
     struct ipa_id_get_account_info_state *state = tevent_req_data(req,
                                           struct ipa_id_get_account_info_state);
     struct tevent_req *subreq;
+
+    if ((ar->entry_type & BE_REQ_TYPE_MASK) == BE_REQ_SUBID_RANGES) {
+        ar->extra_value = talloc_asprintf(ar,
+            "uid=%s,cn=users,cn=accounts,dc=ipasubid,dc=test", ar->filter_value);
+    }
 
     subreq = sdap_handle_acct_req_send(state, state->ctx->be, ar,
                                        state->ipa_ctx->sdap_id_ctx,
