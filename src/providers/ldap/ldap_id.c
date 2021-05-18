@@ -1950,6 +1950,7 @@ errno_t sdap_account_info_handler_recv(TALLOC_CTX *mem_ctx,
 
 /* ************************************************************************************** */
 
+#include "db/sysdb_subid.h"
 static int subid_ranges_get_retry(struct tevent_req *req);
 static void subid_ranges_get_connect_done(struct tevent_req *subreq);
 static void subid_ranges_get_search(struct tevent_req *req);
@@ -2098,7 +2099,6 @@ static void subid_ranges_get_search(struct tevent_req *req)
                                    attrs,
                                    /* TODO:
                                    state->ctx->opts->user_map, state->ctx->opts->user_map_cnt,
-                                   sdap_attr_map *, size_t
                                    */
                                    subid_map, 5,
                                    10, false);
@@ -2164,6 +2164,12 @@ static void subid_ranges_get_done(struct tevent_req *subreq)
         buf[result[c].values[0].length] = 0;
         DEBUG(SSSDBG_FUNC_DATA, "     %s: %s\n", result[c].name, buf);
     }
+
+
+    /* store range */
+    sysdb_store_subid_range(state->domain, "SUBID-STUB-NAME",
+                            0, time(NULL), results[0]);
+
 
     state->dp_error = DP_ERR_OK;
     tevent_req_done(req);
