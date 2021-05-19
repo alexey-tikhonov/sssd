@@ -131,6 +131,7 @@ struct tevent_req *subid_ranges_get_send(TALLOC_CTX *memctx,
                                          struct sdap_id_ctx *ctx,
                                          struct sdap_domain *sdom,
                                          struct sdap_id_conn_ctx *conn,
+                                         const char* filter_value,
                                          const char *extra_value);
 
 int subid_ranges_get_recv(struct tevent_req *req, int *dp_error_out,
@@ -1469,6 +1470,7 @@ sdap_handle_acct_req_send(TALLOC_CTX *mem_ctx,
         }
         subreq = subid_ranges_get_send(state, be_ctx->ev, id_ctx,
                                        sdom, conn,
+                                       ar->filter_value,
                                        ar->extra_value);
         break;
 
@@ -1966,11 +1968,11 @@ struct subid_ranges_get_state {
     struct sss_domain_info *domain;
 
     char *filter;
+    char *name;
     const char **attrs;
 
     int dp_error;
     int sdap_ret;
-    struct sysdb_attrs *extra_attrs;
 };
 
 struct tevent_req *subid_ranges_get_send(TALLOC_CTX *memctx,
@@ -1978,6 +1980,7 @@ struct tevent_req *subid_ranges_get_send(TALLOC_CTX *memctx,
                                          struct sdap_id_ctx *ctx,
                                          struct sdap_domain *sdom,
                                          struct sdap_id_conn_ctx *conn,
+                                         const char *filter_value,
                                          const char *extra_value)
 {
     struct tevent_req *req;
@@ -1992,7 +1995,12 @@ struct tevent_req *subid_ranges_get_send(TALLOC_CTX *memctx,
     state->sdom = sdom;
     state->conn = conn;
     state->dp_error = DP_ERR_FATAL;
-    state->extra_attrs = NULL;
+    state->name = talloc_strdup(state, filter_value);
+    if (!state->name) {
+        DEBUG(SSSDBG_OP_FAILURE, "talloc_strdup failed\n");
+        ret = ENOMEM;
+        goto done;
+    }
 
     state->op = sdap_id_op_create(state, state->conn->conn_cache);
     if (!state->op) {
@@ -2148,6 +2156,7 @@ static void subid_ranges_get_done(struct tevent_req *subreq)
 
     if (num_results == 0 || !results) {
         DEBUG(SSSDBG_OP_FAILURE, "Failed to retrieve subid ranges.\n");
+        /* TODO: delete cached ranges? */
         tevent_req_error(req, ENOENT);
         return;
     }
@@ -2167,8 +2176,9 @@ static void subid_ranges_get_done(struct tevent_req *subreq)
 
 
     /* store range */
-    sysdb_store_subid_range(state->domain, "SUBID-STUB-NAME",
-                            0, time(NULL), results[0]);
+    sysdb_store_subid_range(state->domain, state->name,
+                            0, /* TODO: add expiration timeout */
+                            time(NULL), results[0]);
 
 
     state->dp_error = DP_ERR_OK;

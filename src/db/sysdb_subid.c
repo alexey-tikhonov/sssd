@@ -22,6 +22,7 @@
 
 #define SSH_SUBID_SUBDIR "subid_ranges"
 
+
 errno_t sysdb_store_subid_range(struct sss_domain_info *domain,
                                 const char *name,
                                 int cache_timeout,
@@ -100,6 +101,53 @@ done:
         }
     }
 
+    talloc_free(tmp_ctx);
+
+    return ret;
+}
+
+
+errno_t sysdb_get_subid_ranges(TALLOC_CTX *mem_ctx,
+                               struct sss_domain_info *domain,
+                               const char *name,
+                               const char **attrs,
+                               struct ldb_message **_range)
+{
+    TALLOC_CTX *tmp_ctx;
+    errno_t ret;
+    const char *filter;
+    struct ldb_message **ranges;
+    size_t num_ranges;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) {
+        return ENOMEM;
+    }
+
+    filter = talloc_asprintf(tmp_ctx, "(%s=%s)", SYSDB_NAME, name);
+    if (!filter) {
+        ret = ENOMEM;
+        goto done;
+    }
+
+    ret = sysdb_search_custom(tmp_ctx, domain, filter,
+                              SSH_SUBID_SUBDIR, attrs,
+                              &num_ranges, &ranges);
+    if (ret != EOK) {
+        goto done;
+    }
+
+    if (num_ranges > 1) {
+        ret = EINVAL;
+        DEBUG(SSSDBG_CRIT_FAILURE,
+              "Found more than one range with name %s\n", name);
+        goto done;
+    }
+
+    *_range = talloc_steal(mem_ctx, ranges[0]);
+    ret = EOK;
+
+done:
     talloc_free(tmp_ctx);
 
     return ret;

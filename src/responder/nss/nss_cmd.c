@@ -1043,7 +1043,16 @@ static errno_t nss_cmd_initgroups_ex(struct cli_ctx *cli_ctx)
 
 static errno_t nss_cmd_subid_ranges(struct cli_ctx *cli_ctx)
 {
-    return nss_getby_name(cli_ctx, false, CACHE_REQ_SUBID_RANGES_BY_NAME, NULL,
+    const char *attrs[] =
+        {
+          "subUidCount",
+          "subGidCount",
+          "subUidNumber",
+          "subGidNumber",
+          NULL
+        };
+
+    return nss_getby_name(cli_ctx, false, CACHE_REQ_SUBID_RANGES_BY_NAME, attrs,
                           SSS_MC_NONE, nss_protocol_fill_subid_ranges);
 }
 

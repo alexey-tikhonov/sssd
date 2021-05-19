@@ -23,7 +23,39 @@ nss_protocol_fill_subid_ranges(struct nss_ctx *nss_ctx,
                                struct sss_packet *packet,
                                struct cache_req_result *result)
 {
-    return ERR_INTERNAL;
-    /* TODO */
+    static const uint32_t one = 1;
+    errno_t ret;
+    uint8_t *body;
+    size_t body_len;
+    size_t rp = 0;
+    uint32_t gid, uid, gidCount, uidCount;
+
+    if (!result->count || !result->msgs) {
+        return ENOENT;
+    }
+
+    uid      = ldb_msg_find_attr_as_uint(result->msgs[0], "subUidNumber", 0);
+    uidCount = ldb_msg_find_attr_as_uint(result->msgs[0], "subUidCount",  0);
+    gid      = ldb_msg_find_attr_as_uint(result->msgs[0], "subGidNumber", 0);
+    gidCount = ldb_msg_find_attr_as_uint(result->msgs[0], "subGidCount",  0);
+    if (!uid || !gid || !gidCount || !uidCount) {
+        return ENOENT;
+    }
+
+    /* only single uid & gid range is expected currently */
+    ret = sss_packet_grow(packet, (2 + 2*2) * sizeof(uint32_t));
+    if (ret != EOK) {
+        return ret;
+    }
+
+    sss_packet_get_body(packet, &body, &body_len);
+    SAFEALIGN_COPY_UINT32(&body[rp], &one, &rp);
+    SAFEALIGN_COPY_UINT32(&body[rp], &one, &rp);
+    SAFEALIGN_COPY_UINT32(&body[rp], &uid, &rp);
+    SAFEALIGN_COPY_UINT32(&body[rp], &uidCount, &rp);
+    SAFEALIGN_COPY_UINT32(&body[rp], &gid, &rp);
+    SAFEALIGN_COPY_UINT32(&body[rp], &gidCount, &rp);
+
+    return EOK;
 }
 

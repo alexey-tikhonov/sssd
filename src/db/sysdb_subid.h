@@ -57,12 +57,11 @@ sysdb_search_ssh_hosts(TALLOC_CTX *mem_ctx,
                        struct ldb_message ***hosts);
 */
 
-/*errno_t
-sysdb_get_ssh_host(TALLOC_CTX *mem_ctx,
-                   struct sss_domain_info *domain,
-                   const char *name,
-                   const char **attrs,
-                   struct ldb_message **host);*/
+errno_t sysdb_get_subid_ranges(TALLOC_CTX *mem_ctx,
+                               struct sss_domain_info *domain,
+                               const char *name,
+                               const char **attrs,
+                               struct ldb_message **range);
 
 /*
 errno_t
