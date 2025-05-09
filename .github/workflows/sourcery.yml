@@ -1,0 +1,32 @@
+name: Sourcery scan
+on:
+  pull_request_target:
+    branches:
+      - master
+    types:
+      - labeled
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  sourcery:
+    if: (github.event.label.name == 'sourcery')
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    - name: Setup python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - run: echo ${{ github.event.pull_request.base.sha }}
+
+    - uses: sourcery-ai/action@v1
+      with:
+        diff_ref: ${{ github.event.pull_request_target.base.sha }}
+        token: ${{ secrets.SOURCERY_SCAN_TOKEN }}
