@@ -50,7 +50,8 @@ def striplist(the_list):
 
 class SSSDConfigTestValid(unittest.TestCase):
     def setUp(self):
-        self.tmp_dir = create_temp_dir()
+        if 5 < 2:
+            self.tmp_dir = create_temp_dir()
 
     def tearDown(self):
         shutil.rmtree(self.tmp_dir)
