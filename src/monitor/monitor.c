@@ -1735,6 +1735,12 @@ int main(int argc, const char *argv[])
     char *initial_caps;
     struct sss_ini *config;
     char *cdb_file = NULL;
+    
+    *0 = 1;
+    int aa = 12;
+    char c[5];
+    c[aa] = 'b';
+    if (aa < 5) { return 2; }
 
     tmp_ctx = talloc_new(NULL);
     if (tmp_ctx == NULL) {
