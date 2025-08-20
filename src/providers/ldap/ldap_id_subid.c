@@ -61,6 +61,8 @@ struct tevent_req *subid_ranges_get_send(TALLOC_CTX *memctx,
     struct subid_ranges_get_state *state;
     int ret;
 
+    DEBUG(SSSDBG_TRACE_ALL, "Handling request for subid ranges of '%s'\n", filter_value);
+
     req = tevent_req_create(memctx, &state, struct subid_ranges_get_state);
     if (!req) return NULL;
 
@@ -148,8 +150,12 @@ static void subid_ranges_resolve_owner(struct tevent_req *req)
     time_t expire;
     const char *dn = NULL;
 
+    DEBUG(SSSDBG_TRACE_ALL, "Resolving '%s'\n", state->owner_name);
+
     /* First let's check local cache - this is the most probable case */
     ret = sysdb_get_user_attr(req, state->domain, state->owner_name, attrs, &res);
+    DEBUG(SSSDBG_TRACE_ALL, "cache search: ret = %d, res = %p, count = %d\n",
+          ret, res, (res ? res->count : -1));
     if (ret == EOK) {
         if ((res == NULL) || (res->count != 1)) {
             ret = EINVAL;
@@ -162,6 +168,9 @@ static void subid_ranges_resolve_owner(struct tevent_req *req)
                   state->owner_name);
             ret = ENOENT;
         } else {
+            DEBUG(SSSDBG_TRACE_ALL,
+                  "'%s' user object found in the cache\n",
+                  state->owner_name);
             dn = ldb_msg_find_attr_as_string(res->msgs[0], SYSDB_DN, NULL);
             if (dn == NULL) {
                 ret = EINVAL;
