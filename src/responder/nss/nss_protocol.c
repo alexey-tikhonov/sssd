@@ -467,6 +467,10 @@ sss_nss_protocol_parse_addr(struct cli_ctx *cli_ctx,
     SAFEALIGN_COPY_UINT32(&af, body, NULL);
     SAFEALIGN_COPY_UINT32(&addrlen, body + sizeof(uint32_t), NULL);
 
+    if (addrlen != blen - sizeof(uint32_t) * 2) {
+        return EINVAL;
+    }
+
     addr = body + sizeof(uint32_t) * 2;
 
     /* If the body isn't a addr, fail */
